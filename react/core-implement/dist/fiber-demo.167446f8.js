@@ -356,13 +356,15 @@ function removeNodeAttributes(node, props) {
     }
   });
 }
-},{"../constants":"../src/constants.js"}],"../src/reconciler/diff.js":[function(require,module,exports) {
+},{"../constants":"../src/constants.js"}],"../src/reconciler/fiber.js":[function(require,module,exports) {
+var global = arguments[3];
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
   value: true
 });
 exports.render = render;
+exports.scheduleUpdate = scheduleUpdate;
 exports.Component = void 0;
 
 var _constants = require("../constants");
@@ -375,295 +377,347 @@ function _defineProperties(target, props) { for (var i = 0; i < props.length; i+
 
 function _createClass(Constructor, protoProps, staticProps) { if (protoProps) _defineProperties(Constructor.prototype, protoProps); if (staticProps) _defineProperties(Constructor, staticProps); return Constructor; }
 
-function instantiateComponent(element) {
-  var type = element.type;
-  var isHostComponent = typeof type === 'string';
-  var internalInstance;
+function _objectSpread(target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i] != null ? arguments[i] : {}; var ownKeys = Object.keys(source); if (typeof Object.getOwnPropertySymbols === 'function') { ownKeys = ownKeys.concat(Object.getOwnPropertySymbols(source).filter(function (sym) { return Object.getOwnPropertyDescriptor(source, sym).enumerable; })); } ownKeys.forEach(function (key) { _defineProperty(target, key, source[key]); }); } return target; }
 
-  if (isHostComponent) {
-    internalInstance = new HostComponent(element);
+function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+
+function _toConsumableArray(arr) { return _arrayWithoutHoles(arr) || _iterableToArray(arr) || _nonIterableSpread(); }
+
+function _nonIterableSpread() { throw new TypeError("Invalid attempt to spread non-iterable instance"); }
+
+function _iterableToArray(iter) { if (Symbol.iterator in Object(iter) || Object.prototype.toString.call(iter) === "[object Arguments]") return Array.from(iter); }
+
+function _arrayWithoutHoles(arr) { if (Array.isArray(arr)) { for (var i = 0, arr2 = new Array(arr.length); i < arr.length; i++) { arr2[i] = arr[i]; } return arr2; } }
+
+// 任务队列
+var taskQueue = []; // 下一个需要操作的 fiber
+
+var nextUnitWork = null; // 所有操作完成后，会将该值赋值为跟节点
+
+var pendingCommit = null;
+
+if (!global['requestIdleCallback']) {
+  global['requestIdleCallback'] = function (func) {
+    return func({
+      timeRemaining: function timeRemaining() {
+        return 100;
+      }
+    });
+  };
+}
+
+function render(elements, containerDom) {
+  taskQueue.push({
+    tag: _constants.HOST_ROOT,
+    dom: containerDom,
+    props: {
+      children: elements
+    }
+  });
+  requestIdleCallback(performWork);
+} // 更新函数
+
+
+function scheduleUpdate(instance, partialState) {
+  taskQueue.push({
+    tag: _constants.HOST_COMPONENT,
+    instance: instance,
+    partialState: partialState,
+    props: instance.props
+  });
+  requestIdleCallback(performWork);
+}
+
+function performWork(deadline) {
+  workLoop(deadline);
+
+  if (taskQueue.length || nextUnitWork !== null) {
+    requestIdleCallback(performWork);
+  }
+}
+
+function workLoop(deadline) {
+  if (nextUnitWork === null) {
+    nextUnitWork = resetNextUnitWork();
+  }
+
+  if (nextUnitWork && deadline.timeRemaining() > _constants.ENOUGH_TIME) {
+    nextUnitWork = performUnitWork(nextUnitWork);
+  } // 如果所有任务执行完毕则提交所有任务
+
+
+  if (pendingCommit) {
+    commitAllWork(pendingCommit);
+  }
+} // 获取下一个要操作的 fiber
+// 更新或渲染的过程就是构建 fiber 树的过程，每次都是从根 fiber 开始
+
+
+function resetNextUnitWork() {
+  var task = taskQueue.shift();
+
+  if (task === undefined) {
+    return null;
+  }
+
+  if (task.tag === _constants.HOST_ROOT) {
+    nextUnitWork = {
+      tag: _constants.HOST_ROOT,
+      statNode: task.dom,
+      props: task.props,
+      alternate: task.dom[_constants.ROOT_FIBER]
+    };
+    return nextUnitWork;
+  }
+
+  var currentFiber = task.instance[_constants.INSTANCE_INNER_FIBER]; // 有疑问 - use while get root fiber
+
+  var getRootFiber = function getRootFiber(fiber) {
+    if (fiber.tag !== _constants.HOST_ROOT) {
+      fiber = fiber.parent;
+    }
+
+    return fiber;
+  };
+
+  var oldRootFiber = getRootFiber(currentFiber);
+  nextUnitWork = {
+    tag: _constants.HOST_ROOT,
+    statNode: oldRootFiber.statNode,
+    props: oldRootFiber.props,
+    alternate: oldRootFiber
+  };
+
+  if (task.partialState) {
+    currentFiber.partialState = task.partialState;
+  }
+
+  return nextUnitWork;
+}
+
+function performUnitWork(fiber) {
+  beginWork(fiber); // 采用深度优先遍历 fiber 树，先遍历孩子节点
+
+  if (fiber.child) {
+    return fiber.child;
+  }
+
+  while (fiber) {
+    completeWork(fiber);
+
+    if (fiber.sibling) {
+      return fiber.sibling;
+    } // 父节点兄弟节点
+
+
+    fiber = fiber.parent;
+  }
+
+  return null;
+}
+
+function beginWork(fiber) {
+  if (fiber.tag === _constants.COMPOSITE_COMPONENT) {
+    workInCompositeComponent(fiber);
   } else {
-    internalInstance = new CompositeComponent(element);
+    workInHostComponent(fiber);
   }
-
-  return internalInstance;
-} // 管理组件
+} // 将各 fiber 的操作以及它需要操作的孩子 fiber 都提交到父 fiber
 
 
-var CompositeComponent =
-/*#__PURE__*/
-function () {
-  function CompositeComponent(element) {
-    _classCallCheck(this, CompositeComponent);
+function completeWork(fiber) {
+  if (fiber.tag === _constants.COMPOSITE_COMPONENT && fiber.statNode != null) {
+    fiber.statNode[_constants.INSTANCE_INNER_FIBER] = fiber;
+  } // 向父 fiber 提交所有操作
 
-    this.currentElement = element;
-    this.publicInstance = null;
-    this.renderedInternalInstance = null;
+
+  if (fiber.parent) {
+    var childEffects = fiber.effects || [];
+    var parentEffects = fiber.parent.effects || [];
+    fiber.parent.effects = [].concat(_toConsumableArray(parentEffects), _toConsumableArray(childEffects), [fiber]);
+  } else {
+    pendingCommit = fiber;
   }
-
-  _createClass(CompositeComponent, [{
-    key: "getHostNode",
-    value: function getHostNode() {
-      return this.renderedInternalInstance.getHostNode();
-    }
-  }, {
-    key: "mount",
-    value: function mount() {
-      var element = this.currentElement;
-      var _element$type = element.type,
-          type = _element$type === void 0 ? function () {} : _element$type,
-          _element$props = element.props,
-          props = _element$props === void 0 ? {} : _element$props;
-      var renderedElement;
-
-      if (isClass(type)) {
-        var publicInstance = new type(props);
-        this.publicInstance = publicInstance;
-        renderedElement = publicInstance.render();
-      } else {
-        renderedElement = type(props);
-      }
-
-      var renderedInternalInstance = instantiateComponent(renderedElement);
-      this.renderedInternalInstance = renderedInternalInstance;
-
-      if (this.publicInstance) {
-        this.publicInstance[_constants.RENDERED_INTERNAL_INSTANCE] = renderedInternalInstance;
-      }
-
-      var node = renderedInternalInstance.mount();
-
-      if (this.publicInstance && typeof this.publicInstance.componentDidMount === 'function') {
-        this.publicInstance.componentDidMount();
-      }
-
-      return node;
-    }
-  }, {
-    key: "unmount",
-    value: function unmount() {
-      var renderedInternalInstance = this.renderedInternalInstance;
-      renderedInternalInstance.unmount();
-    }
-  }, {
-    key: "receive",
-    value: function receive(element) {
-      var prevRenderedInternalInstance = this.renderedInternalInstance;
-      var prevRenderedElement = prevRenderedInternalInstance.currentElement;
-      var type = element.type;
-      var nextProps = element.props || {};
-
-      if (this.publicInstance) {
-        this.publicInstance.props = nextProps;
-      }
-
-      var nextRenderedElement;
-
-      if (isClass(type)) {
-        nextRenderedElement = this.publicInstance.render();
-      } else {
-        nextRenderedElement = type(nextProps);
-      }
-
-      if (prevRenderedElement.type === nextRenderedElement.type) {
-        prevRenderedInternalInstance.receive(nextRenderedElement);
-      } // 直接替换
+} // 提交阶段就是对所有需要操作的 fiber 进行遍历，将他们的结果呈现在浏览器
 
 
-      var prevNode = prevRenderedInternalInstance.getHostNode();
-      var nextRenderedInternalInstance = instantiateComponent(nextRenderedElement); // const nextNode = nextRenderedInternalInstance.getHostNode()
+function commitAllWork(rootFiber) {
+  var effects = rootFiber.effects;
 
-      var nextNode = nextRenderedInternalInstance.mount();
-      var parentNode = (0, _dom.getParentNode)(prevNode);
+  for (var i = 0; i < effects.length; i++) {
+    var fiber = effects[i];
+    var parentNodeFiber = upwardUtilNodeFiber(fiber);
+    var nodeFiber = downwardUtilNodeFiber(fiber);
 
-      if (parentNode) {
-        (0, _dom.replaceNode)(parentNode, nextNode, prevNode);
-      }
-    }
-  }]);
+    if (nodeFiber) {
+      var parentNode = parentNodeFiber.statNode;
+      var node = nodeFiber.statNode;
 
-  return CompositeComponent;
-}();
+      if (fiber.effectTag === _constants.OPERATION.ADD) {
+        (0, _dom.appendNode)(parentNode, node);
+      } else if (fiber.effectTag === _constants.OPERATION.REMOVE) {
+        (0, _dom.removeNode)(parentNode, node);
+      } else if (fiber.effectTag === _constants.OPERATION.REPLACE) {
+        var prevNodeFiber = downwardUtilNodeFiber(nodeFiber.alternate);
 
-var HostComponent =
-/*#__PURE__*/
-function () {
-  function HostComponent(element) {
-    _classCallCheck(this, HostComponent);
-
-    this.currentElement = element;
-    this.renderedInternalInstanceChildren = [];
-    this.node = null;
-  }
-
-  _createClass(HostComponent, [{
-    key: "getHostNode",
-    value: function getHostNode() {
-      return this.node;
-    }
-  }, {
-    key: "mount",
-    value: function mount() {
-      var element = this.currentElement;
-      var props = element.props || {};
-      var node = (0, _dom.createNode)(element);
-      this.node = node;
-      var elementChildren = props.children || [];
-
-      if (!Array.isArray(elementChildren)) {
-        elementChildren = [elementChildren];
-      }
-
-      var renderedInternalInstanceChildren = elementChildren.map(instantiateComponent);
-      var nodeChildren = renderedInternalInstanceChildren.map(function (child) {
-        return child.mount();
-      });
-      this.renderedInternalInstanceChildren = renderedInternalInstanceChildren;
-      nodeChildren.forEach(function (nodeChild) {
-        return (0, _dom.appendNode)(node, nodeChild);
-      });
-      return node;
-    }
-  }, {
-    key: "unmount",
-    value: function unmount() {
-      var node = this.node;
-      var renderedInternalInstanceChildren = this.renderedInternalInstanceChildren;
-
-      if (renderedInternalInstanceChildren) {
-        renderedInternalInstanceChildren.forEach(function (child) {
-          child.unmount();
-          var childNode = child.getHostNode();
-          (0, _dom.removeNode)(node, childNode);
-        });
-      }
-    }
-  }, {
-    key: "receive",
-    value: function receive(element) {
-      var node = this.node;
-      var prevProps = this.currentElement.props;
-      var nextProps = element.props || {};
-      (0, _dom.updateNodeAttributes)(node, nextProps, prevProps);
-      var prevRenderedInternalInstanceChildren = this.renderedInternalInstanceChildren;
-      var nextRenderedInternalInstanceChildren = [];
-      var prevElementChildren = prevProps.children || [];
-      var nextElementChildren = nextProps.children || [];
-      var operationQueue = [];
-
-      for (var i = 0; i < nextElementChildren.length; i++) {
-        var prevRenderedInternalInstance = prevRenderedInternalInstanceChildren[i];
-        var prevElement = prevElementChildren[i];
-        var nextElement = nextElementChildren[i]; // 新增
-
-        if (!prevElement) {
-          var nextRenderedInternalInstance = instantiateComponent(nextElement);
-          var nextNode = nextRenderedInternalInstance.mount();
-          nextRenderedInternalInstanceChildren.push(nextRenderedInternalInstance);
-          operationQueue.push({
-            type: _constants.OPERATION.ADD,
-            node: nextNode
-          });
-          continue;
-        } // 替换
-
-
-        var canUpdate = prevElement.type === nextElement.type;
-
-        if (!canUpdate) {
-          var _nextRenderedInternalInstance = instantiateComponent(nextElement);
-
-          var _nextNode = _nextRenderedInternalInstance.mount();
-
-          var prevNode = prevRenderedInternalInstance.getHostNode();
-          nextRenderedInternalInstanceChildren.push(_nextRenderedInternalInstance);
-          operationQueue.push({
-            type: _constants.OPERATION.REPLACE,
-            prevNode: prevNode,
-            nextNode: _nextNode
-          });
-          continue;
-        } // 更新
-
-
-        prevRenderedInternalInstance.receive(nextElement);
-        nextRenderedInternalInstanceChildren.push(prevRenderedInternalInstance);
-      } // 删除
-
-
-      for (var _i = nextElementChildren.length; _i < prevElementChildren.length; _i++) {
-        var _prevRenderedInternalInstance = prevRenderedInternalInstanceChildren[_i];
-
-        _prevRenderedInternalInstance.unmount();
-
-        var _prevNode = _prevRenderedInternalInstance.getHostNode();
-
-        operationQueue.push({
-          type: _constants.OPERATION.REMOVE,
-          node: _prevNode
-        });
-      } // 执行各操作
-
-
-      while (operationQueue.length > 0) {
-        var operation = operationQueue.shift();
-
-        if (operation.type === _constants.OPERATION.ADD) {
-          (0, _dom.appendNode)(node, operation.node);
-        } else if (operation.type === _constants.OPERATION.REMOVE) {
-          (0, _dom.removeNode)(node, operation.node);
-        } else if (operation.type === _constants.OPERATION.REPLACE) {
-          (0, _dom.replaceNode)(node, operation.nextNode, operation.prevNode);
+        if (prevNodeFiber) {
+          (0, _dom.replaceNode)(parentNode, node, prevNodeFiber.statNode);
+        }
+      } else if (fiber.effectTag === _constants.OPERATION.UPDATE) {
+        if (fiber.tag === _constants.HOST_COMPONENT) {
+          (0, _dom.updateNodeAttributes)(node, fiber.props, fiber.alternate.props);
         }
       }
-
-      this.renderedInternalInstanceChildren = nextRenderedInternalInstanceChildren;
     }
-  }]);
 
-  return HostComponent;
-}();
+    var fiberInstance = fiber.type.isReactComponent ? fiber.statNode : null;
 
-function unmountAll(containerNode) {
-  var firstChildNode = (0, _dom.getFirstChildNode)(containerNode);
-
-  if (firstChildNode) {
-    var rootInternalInstance = firstChildNode[_constants.INTERNAL_INSTANCE];
-
-    if (rootInternalInstance) {
-      rootInternalInstance.unmount();
-      var rootNode = rootInternalInstance.getHostNode();
-      (0, _dom.removeNode)(containerNode, rootNode);
+    if (fiberInstance && fiberInstance.isFirstCreate && typeof fiberInstance.componentDidMount === 'function') {
+      fiberInstance.componentDidMount();
     }
   }
 }
 
-function render(element, containerNode) {
-  var firstChildNode = (0, _dom.getFirstChildNode)(containerNode);
+function downwardUtilNodeFiber(fiber) {
+  while (fiber.tag === _constants.COMPOSITE_COMPONENT) {
+    fiber = fiber.child;
+  }
 
-  if (firstChildNode) {
-    var prevInternalInstance = firstChildNode[_constants.INTERNAL_INSTANCE];
+  return fiber;
+}
 
-    if (prevInternalInstance) {
-      var prevElement = prevInternalInstance.currentElement;
+function upwardUtilNodeFiber(fiber) {
+  fiber = fiber.parent;
 
-      if (prevElement.type === element.type) {
-        prevInternalInstance.receive(element);
-        return;
+  while (fiber.tag === _constants.COMPOSITE_COMPONENT) {
+    fiber = fiber.parent;
+  }
+
+  return fiber;
+}
+
+function workInCompositeComponent(fiber) {
+  var type = fiber.type,
+      props = fiber.props,
+      alternate = fiber.alternate,
+      statNode = fiber.statNode,
+      partialState = fiber.partialState; // 未更新直接克隆
+
+  if (alternate && alternate.props === props && !partialState) {
+    cloneChildrenFiber(fiber);
+    return;
+  }
+
+  var instance = statNode;
+  var isClassComponent = type.isReactComponent;
+
+  if (isClassComponent) {
+    if (!instance) {
+      instance = new type(props);
+      instance.isFirstCreate = true;
+    } else {
+      instance.isFirstCreate = false;
+    }
+
+    instance.props = props;
+    instance.state = Object.assign({}, instance.state, partialState);
+  }
+
+  fiber.statNode = instance;
+  var childrenElements = instance ? instance.render() : type(props);
+  reconcileChildren(fiber, childrenElements);
+}
+
+function workInHostComponent(fiber) {
+  var _fiber$props = fiber.props,
+      props = _fiber$props === void 0 ? {} : _fiber$props;
+
+  if (!fiber.statNode) {
+    fiber.statNode = (0, _dom.createNode)({
+      type: fiber.type,
+      props: fiber.props
+    });
+  }
+
+  var childrenElements = props.children;
+  reconcileChildren(fiber, childrenElements);
+}
+
+function reconcileChildren(fiber, elements) {
+  elements = elements ? Array.isArray(elements) ? elements : [elements] : [];
+  var oldChildFiber = fiber.alternate ? fiber.alternate.child : null;
+  var newChildFiber = null;
+  var index = 0;
+
+  while (index < elements.length || oldChildFiber) {
+    var prevFiber = newChildFiber;
+    var element = elements[index];
+
+    if (element) {
+      newChildFiber = {
+        tag: typeof element.type === 'function' ? _constants.COMPOSITE_COMPONENT : _constants.HOST_COMPONENT,
+        type: element.type,
+        props: element.props,
+        parent: fiber,
+        alternate: oldChildFiber
+      };
+    } else {
+      newChildFiber = null;
+    }
+
+    if (!oldChildFiber && element) {
+      newChildFiber.effectTag = _constants.OPERATION.ADD;
+    }
+
+    if (oldChildFiber) {
+      if (!element) {
+        // 移除 fiber tree，需存储
+        oldChildFiber.effectTag = _constants.OPERATION.REMOVE;
+        fiber.effects = fiber.effects || [];
+        fiber.effects.push(oldChildFiber);
+      } else if (element && newChildFiber.type !== oldChildFiber.type) {
+        newChildFiber.effectTag = _constants.OPERATION.REPLACE;
+      } else if (element && (oldChildFiber.props !== newChildFiber.props || oldChildFiber.partialState)) {
+        newChildFiber.partialState = oldChildFiber.partialState;
+        newChildFiber.statNode = oldChildFiber.statNode;
+        newChildFiber.effectTag = _constants.OPERATION.UPDATE;
       }
+    } // 更改指向
+
+
+    if (oldChildFiber) {
+      oldChildFiber = oldChildFiber.sibling;
     }
 
-    unmountAll(containerNode);
-  }
+    if (index === 0) {
+      fiber.child = newChildFiber;
+    } else {
+      prevFiber.sibling = newChildFiber;
+    }
 
-  var internalInstance = instantiateComponent(element);
-  var node = internalInstance.mount();
-  node[_constants.INTERNAL_INSTANCE] = internalInstance;
-  (0, _dom.appendNode)(containerNode, node);
+    index += 1;
+  }
 }
 
-function isClass(type) {
-  return type.isReactComponent;
+function cloneChildrenFiber(parentFiber) {
+  var oldFiber = parentFiber.alternate.child;
+  var prevFiber = null; // 遍历更改指向
+
+  while (oldFiber) {
+    var newFiber = _objectSpread({}, oldFiber, {
+      alternate: oldFiber,
+      parent: parentFiber
+    });
+
+    if (!prevFiber) {
+      parentFiber.child = newFiber;
+    } else {
+      prevFiber.sibling = newFiber;
+    }
+
+    prevFiber = newFiber;
+    oldFiber = oldFiber.sibling;
+  }
 }
 
 var Component =
@@ -677,23 +731,8 @@ function () {
 
   _createClass(Component, [{
     key: "setState",
-    value: function setState(state) {
-      var nextState = Object.assign({}, state);
-      var renderedInternalInstance = this[_constants.RENDERED_INTERNAL_INSTANCE];
-      this.state = nextState;
-      var nextRenderedElement = this.render();
-
-      if (renderedInternalInstance) {
-        renderedInternalInstance.receive(nextRenderedElement);
-      }
-    }
-  }, {
-    key: "componentDidMount",
-    value: function componentDidMount() {// override
-    }
-  }, {
-    key: "render",
-    value: function render() {// override
+    value: function setState(nextState) {
+      scheduleUpdate(this, nextState);
     }
   }]);
 
@@ -743,10 +782,10 @@ function h(type, props) {
     props: props
   };
 }
-},{"./constants":"../src/constants.js"}],"diff-demo.js":[function(require,module,exports) {
+},{"./constants":"../src/constants.js"}],"fiber-demo.js":[function(require,module,exports) {
 "use strict";
 
-var _diff = require("../src/reconciler/diff");
+var _fiber = require("../src/reconciler/fiber");
 
 var _h = require("../src/h");
 
@@ -802,10 +841,10 @@ function (_Component) {
   }]);
 
   return App;
-}(_diff.Component);
+}(_fiber.Component);
 
-(0, _diff.render)((0, _h.h)(App, null), document.getElementById('diff-app'));
-},{"../src/reconciler/diff":"../src/reconciler/diff.js","../src/h":"../src/h.js"}],"../../../../../../../../usr/local/lib/node_modules/parcel-bundler/src/builtins/hmr-runtime.js":[function(require,module,exports) {
+(0, _fiber.render)((0, _h.h)(App, null), document.getElementById('fiber-app'));
+},{"../src/reconciler/fiber":"../src/reconciler/fiber.js","../src/h":"../src/h.js"}],"../../../../../../../../usr/local/lib/node_modules/parcel-bundler/src/builtins/hmr-runtime.js":[function(require,module,exports) {
 var global = arguments[3];
 var OVERLAY_ID = '__parcel__error__overlay__';
 var OldModule = module.bundle.Module;
@@ -974,5 +1013,5 @@ function hmrAccept(bundle, id) {
     return hmrAccept(global.parcelRequire, id);
   });
 }
-},{}]},{},["../../../../../../../../usr/local/lib/node_modules/parcel-bundler/src/builtins/hmr-runtime.js","diff-demo.js"], null)
-//# sourceMappingURL=/diff-demo.7878b09c.map
+},{}]},{},["../../../../../../../../usr/local/lib/node_modules/parcel-bundler/src/builtins/hmr-runtime.js","fiber-demo.js"], null)
+//# sourceMappingURL=/fiber-demo.167446f8.map
