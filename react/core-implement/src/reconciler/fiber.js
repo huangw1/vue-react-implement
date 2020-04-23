@@ -255,6 +255,22 @@ function workInHostComponent(fiber) {
     reconcileChildren(fiber, childrenElements);
 }
 
+/**
+ // react call stack 实现
+ function link(parent, elements) {
+    if (elements === null) elements = [];
+
+    parent.child = elements.reduceRight((previous, current) => {
+        const node = new Node(current);
+        node.return = parent;
+        node.sibling = previous;
+        return node;
+    }, null);
+
+    return parent.child;
+ }
+ // 实现类似
+ */
 function reconcileChildren(fiber, elements) {
     elements = elements ? (Array.isArray(elements) ? elements : [elements]) : [];
 
